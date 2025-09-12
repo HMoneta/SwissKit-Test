@@ -44,8 +44,10 @@ jobs:
           
           $env:PYTHONIOENCODING = "utf-8"
           $env:PYTHONUTF8 = "1"
+
+          $versionClean = $VERSION -replace '^v', ''
           
-          uv run flet build windows --build-version $VERSION
+          uv run flet build windows --build-version $versionClean
         shell: powershell
 
       # 新增：安装 Inno Setup
