@@ -23,29 +23,25 @@ jobs:
         with:
           python-version: '3.11'
           architecture: x64
-          
-      # 修复：使用更新的 Flutter 版本
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.24.0'  # 支持 Dart 3.9+
-          channel: 'stable'
-          
-      # 添加：清理缓存和依赖
-      - name: Clean Flutter cache
-        run: |
-          flutter clean
-          flutter pub cache clean
-          
-      - name: Check Flutter environment
+
+      # 清理可能的 Flutter 缓存冲突
+      - name: Clean Flutter environment
         shell: powershell
         run: |
-          Write-Output "=== Current Flutter Environment ==="
-          flutter --version
-          Write-Output "=== Dart Version ==="
-          dart --version
-          Write-Output "=== Flutter Doctor ==="
-          flutter doctor -v
+          Write-Output "=== Cleaning potential Flutter conflicts ==="
+          # 清理可能存在的 Flutter 缓存
+          if (Test-Path "$env:USERPROFILE\flutter") {
+            Write-Output "Removing existing Flutter directory..."
+            Remove-Item -Recurse -Force "$env:USERPROFILE\flutter" -ErrorAction SilentlyContinue
+          }
+          if (Test-Path "$env:LOCALAPPDATA\Pub\Cache") {
+            Write-Output "Removing Flutter Pub cache..."
+            Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Pub\Cache" -ErrorAction SilentlyContinue
+          }
+          # 清理 PATH 中的 Flutter 路径
+          $originalPath = $env:PATH
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notlike '*flutter*' }) -join ';'
+          Write-Output "Cleaned PATH from Flutter references"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
@@ -57,15 +53,22 @@ jobs:
           uv sync
           uv add flet
 
-      # 添加：强制刷新 Flutter 依赖
-      - name: Get Flutter dependencies
+      - name: Check Flet environment
+        shell: powershell
         run: |
-          flutter pub get
+          Write-Output "=== Python Environment ==="
+          python --version
+          Write-Output "=== UV Environment ==="
+          uv --version
+          Write-Output "=== Flet Version ==="
+          uv run python -c "import flet; print(f'Flet version: {flet.__version__}')"
 
       - name: Build with flet
         env:
-          # 强制 Flet 使用特定版本或重新下载 Flutter
+          # 确保 Flet 使用自己的 Flutter
           FLUTTER_ROOT: ""
+          PUB_CACHE: ""
+        shell: powershell
         run: |
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $VERSION = "${{ github.event.inputs.test_version }}"
@@ -78,17 +81,19 @@ jobs:
 
           $versionClean = $VERSION -replace '^v', ''
           
-          # 添加详细输出
+          Write-Output "=== Starting Flet Build ==="
+          Write-Output "Build version: $versionClean"
+          
+          # 添加详细输出来调试问题
           uv run flet build windows --build-version $versionClean --verbose
-        shell: powershell
 
-      # 新增：安装 Inno Setup
+      # 安装 Inno Setup
       - name: Install Inno Setup
         run: |
           choco install innosetup -y
         shell: powershell
 
-      # 新增：创建 Inno Setup 脚本
+      # 创建 Inno Setup 脚本
       - name: Create Inno Setup script
         shell: powershell
         run: |
@@ -116,26 +121,18 @@ jobs:
           OutputDir=installer
           OutputBaseFilename=SwissKit-Setup-$versionClean
           WizardStyle=modern
-          ; 权限设置：允许用户选择安装路径
           PrivilegesRequired=admin
           PrivilegesRequiredOverridesAllowed=commandline dialog
           ArchitecturesAllowed=x64compatible
           ArchitecturesInstallIn64BitMode=x64compatible
-          ; 允许用户选择安装目录
           DisableDirPage=no
           DisableProgramGroupPage=no
-          ; 设置最小空间需求（100MB，根据实际需要调整）
           ExtraDiskSpaceRequired=104857600
-          ; 允许用户取消安装
           AllowCancelDuringInstall=yes
-          ; 升级支持：使用唯一的 AppId 来识别已安装的版本
           AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
-          ; 版本信息文件
           VersionInfoVersion=$versionClean
           VersionInfoDescription=SwissKit Application
-          ; 设置卸载键
           UninstallDisplayIcon={app}\SwissKit.exe
-          ; 升级时的行为
           SetupMutex=SwissKitSetupMutex
           AppMutex=SwissKitAppMutex
           
@@ -173,12 +170,11 @@ jobs:
           function ShouldSkipPage(PageID: Integer): Boolean;
           begin
             Result := False;
-            // 升级时跳过某些页面
             if IsUpgrade() then
             begin
               case PageID of
-                wpSelectDir: Result := True;  // 升级时跳过目录选择
-                wpSelectProgramGroup: Result := True;  // 升级时跳过程序组选择
+                wpSelectDir: Result := True;
+                wpSelectProgramGroup: Result := True;
               end;
             end;
           end;
@@ -212,13 +208,13 @@ jobs:
           New-Item -ItemType Directory -Path "installer" -Force
           $innoScript | Out-File -FilePath "swisskit.iss" -Encoding UTF8
 
-      # 新增：构建安装包
+      # 构建安装包
       - name: Build installer
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "swisskit.iss"
         shell: powershell
 
-      # 修改：同时打包ZIP和安装包
+      # 打包构建产物
       - name: Package builds
         shell: powershell
         run: |
@@ -283,22 +279,12 @@ jobs:
             **Installer Version:**
             1. Download the `.exe` installer file
             2. Double-click to run the installer
-            3. Follow the setup wizard:
-               - For new installation: Choose installation directory
-               - For upgrade: Previous settings will be preserved
-            4. Select additional options (desktop shortcut, etc.)
-            5. Launch from desktop or start menu
-            
-            **Upgrade Instructions:**
-            - Simply run the new installer
-            - It will detect existing installation
-            - Your settings and data will be preserved
-            - The old version will be automatically replaced
+            3. Follow the setup wizard
+            4. Launch from desktop or start menu
             
             **Portable Version:**
             1. Download and extract the ZIP file
             2. Run `SwissKit.exe` from the extracted folder
-            3. If you see a security warning, click "More info" → "Run anyway"
             
             > **System Requirements:** Windows 10/11 (x64)
         env:
