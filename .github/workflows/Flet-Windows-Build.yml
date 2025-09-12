@@ -24,10 +24,18 @@ jobs:
           python-version: '3.11'
           architecture: x64
           
+      # 修复：使用更新的 Flutter 版本
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.24.0'  # 支持 Dart 3.9+
           channel: 'stable'
+          
+      # 添加：清理缓存和依赖
+      - name: Clean Flutter cache
+        run: |
+          flutter clean
+          flutter pub cache clean
           
       - name: Check Flutter environment
         shell: powershell
@@ -49,7 +57,15 @@ jobs:
           uv sync
           uv add flet
 
+      # 添加：强制刷新 Flutter 依赖
+      - name: Get Flutter dependencies
+        run: |
+          flutter pub get
+
       - name: Build with flet
+        env:
+          # 强制 Flet 使用特定版本或重新下载 Flutter
+          FLUTTER_ROOT: ""
         run: |
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $VERSION = "${{ github.event.inputs.test_version }}"
@@ -62,7 +78,8 @@ jobs:
 
           $versionClean = $VERSION -replace '^v', ''
           
-          uv run flet build windows --build-version $versionClean
+          # 添加详细输出
+          uv run flet build windows --build-version $versionClean --verbose
         shell: powershell
 
       # 新增：安装 Inno Setup
