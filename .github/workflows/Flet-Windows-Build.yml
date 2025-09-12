@@ -23,6 +23,22 @@ jobs:
         with:
           python-version: '3.11'
           architecture: x64
+          
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.2' # 使用与您本地相同的版本
+          channel: 'stable'
+          
+      - name: Check Flutter environment
+        shell: powershell
+        run: |
+          Write-Output "=== Current Flutter Environment ==="
+          flutter --version
+          Write-Output "=== Dart Version ==="
+          dart --version
+          Write-Output "=== Flutter Doctor ==="
+          flutter doctor -v
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
