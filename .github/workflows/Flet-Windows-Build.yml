@@ -54,10 +54,6 @@ jobs:
           uv add flet
 
       - name: Build with flet
-        env:
-          # 确保 Flet 使用自己的 Flutter
-          FLUTTER_ROOT: ""
-          PUB_CACHE: ""
         shell: powershell
         run: |
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
@@ -68,14 +64,12 @@ jobs:
           
           $env:PYTHONIOENCODING = "utf-8"
           $env:PYTHONUTF8 = "1"
-
-          $versionClean = $VERSION -replace '^v', ''
           
           Write-Output "=== Starting Flet Build ==="
           Write-Output "Build version: $versionClean"
           
           # 添加详细输出来调试问题
-          uv run flet build windows --build-version $versionClean --verbose
+          uv run flet build windows --build-version $VERSION --verbose
 
       # 安装 Inno Setup
       - name: Install Inno Setup
