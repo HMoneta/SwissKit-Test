@@ -27,7 +27,6 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.29.2' # 使用与您本地相同的版本
           channel: 'stable'
           
       - name: Check Flutter environment
