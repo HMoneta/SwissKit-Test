@@ -53,16 +53,6 @@ jobs:
           uv sync
           uv add flet
 
-      - name: Check Flet environment
-        shell: powershell
-        run: |
-          Write-Output "=== Python Environment ==="
-          python --version
-          Write-Output "=== UV Environment ==="
-          uv --version
-          Write-Output "=== Flet Version ==="
-          uv run python -c "import flet; print(f'Flet version: {flet.__version__}')"
-
       - name: Build with flet
         env:
           # 确保 Flet 使用自己的 Flutter
