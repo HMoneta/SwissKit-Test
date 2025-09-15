@@ -84,8 +84,7 @@ jobs:
           # 安装依赖
           uv sync --all-extras
           
-          # 验证安装
-          uv run python -c "import flet; print(f'Flet version: {flet.__version__}')"
+        
 
       - name: Build application
         shell: powershell
