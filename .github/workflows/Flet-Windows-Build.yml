@@ -40,6 +40,9 @@ jobs:
           } else {
             $VERSION = "${{ github.ref_name }}"
           }
+
+          $env:PYTHONIOENCODING = "utf-8"
+          $env:PYTHONUTF8 = "1"
           
           uv run flet build windows --build-version $VERSION
         shell: powershell
