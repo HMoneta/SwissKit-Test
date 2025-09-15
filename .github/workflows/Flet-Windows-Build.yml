@@ -24,35 +24,96 @@ jobs:
           python-version: '3.11'
           architecture: x64
 
-      # 清理可能的 Flutter 缓存冲突
-      - name: Clean Flutter environment
-        shell: powershell
-        run: |
-          Write-Output "=== Cleaning potential Flutter conflicts ==="
-          # 清理可能存在的 Flutter 缓存
-          if (Test-Path "$env:USERPROFILE\flutter") {
-            Write-Output "Removing existing Flutter directory..."
-            Remove-Item -Recurse -Force "$env:USERPROFILE\flutter" -ErrorAction SilentlyContinue
-          }
-          if (Test-Path "$env:LOCALAPPDATA\Pub\Cache") {
-            Write-Output "Removing Flutter Pub cache..."
-            Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Pub\Cache" -ErrorAction SilentlyContinue
-          }
-          # 清理 PATH 中的 Flutter 路径
-          $originalPath = $env:PATH
-          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notlike '*flutter*' }) -join ';'
-          Write-Output "Cleaned PATH from Flutter references"
-
       - name: Install uv
         uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
 
-      - name: Install dependencies
+      # 完全清理环境
+      - name: Clean build environment
+        shell: powershell
         run: |
-          uv sync
-          uv add flet
+          Write-Output "=== Cleaning build environment ==="
+          
+          # 清理可能存在的 Flutter 相关缓存
+          $foldersToClean = @(
+            "$env:USERPROFILE\flutter",
+            "$env:USERPROFILE\.flutter",
+            "$env:LOCALAPPDATA\Pub\Cache",
+            "$env:APPDATA\Pub\Cache",
+            "$env:TEMP\flet*",
+            "build"
+          )
+          
+          foreach ($folder in $foldersToClean) {
+            if (Test-Path $folder) {
+              Write-Output "Removing: $folder"
+              Remove-Item -Recurse -Force $folder -ErrorAction SilentlyContinue
+            }
+          }
+          
+          # 清理环境变量中的 Flutter 路径
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notlike '*flutter*' -and $_ -notlike '*pub*' }) -join ';'
+          Write-Output "Environment cleaned"
 
+      # 设置环境变量
+      - name: Set build environment
+        shell: powershell
+        run: |
+          # 设置编码
+          $env:PYTHONIOENCODING = "utf-8"
+          $env:PYTHONUTF8 = "1"
+          
+          # 设置 Flet 相关环境变量
+          $env:FLET_FORCE_DOWNLOAD_FLUTTER = "true"
+          $env:FLET_FLUTTER_VERSION = ""  # 让 Flet 决定版本
+          
+          # 输出到 GitHub 环境
+          echo "PYTHONIOENCODING=utf-8" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "PYTHONUTF8=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "FLET_FORCE_DOWNLOAD_FLUTTER=true" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install dependencies with retry
+        shell: powershell
+        run: |
+          # 多次尝试安装，避免网络问题
+          $maxRetries = 3
+          $retryCount = 0
+          $success = $false
+          
+          while (-not $success -and $retryCount -lt $maxRetries) {
+            try {
+              $retryCount++
+              Write-Output "=== Install attempt $retryCount ==="
+              
+              # 清理之前的安装
+              if (Test-Path ".venv") {
+                Remove-Item -Recurse -Force ".venv" -ErrorAction SilentlyContinue
+              }
+              
+              # 安装依赖
+              uv sync --all-extras
+              $success = $true
+              Write-Output "Dependencies installed successfully"
+            }
+            catch {
+              Write-Output "Install attempt $retryCount failed: $_"
+              if ($retryCount -ge $maxRetries) {
+                throw "Failed to install dependencies after $maxRetries attempts"
+              }
+              Start-Sleep -Seconds 10
+            }
+          }
+
+      # 验证 Flet 安装
+      - name: Verify Flet installation
+        shell: powershell
+        run: |
+          Write-Output "=== Verifying Flet installation ==="
+          uv run python -c "import flet; print(f'Flet version: {flet.__version__}')"
+          uv run flet --version
+
+      # 构建应用
       - name: Build with flet
         shell: powershell
         run: |
@@ -62,14 +123,47 @@ jobs:
             $VERSION = "${{ github.ref_name }}"
           }
           
-          $env:PYTHONIOENCODING = "utf-8"
-          $env:PYTHONUTF8 = "1"
-          
           Write-Output "=== Starting Flet Build ==="
-          Write-Output "Build version: $versionClean"
+          Write-Output "Build version: $VERSION"
           
-          # 添加详细输出来调试问题
-          uv run flet build windows --build-version $VERSION --verbose
+          # 设置更详细的日志
+          $env:FLUTTER_VERBOSE = "true"
+          $env:FLET_DEBUG = "true"
+          
+          try {
+            # 使用更保守的构建参数
+            uv run flet build windows `
+              --build-version $VERSION `
+              --verbose `
+              --build-number 1 `
+              --no-rich-output `
+              2>&1 | Tee-Object -FilePath "build.log"
+          }
+          catch {
+            Write-Output "=== Build failed, showing logs ==="
+            if (Test-Path "build.log") {
+              Get-Content "build.log" | Write-Output
+            }
+            throw "Flet build failed: $_"
+          }
+
+      # 验证构建结果
+      - name: Verify build output
+        shell: powershell
+        run: |
+          Write-Output "=== Verifying build output ==="
+          if (-not (Test-Path "build\windows")) {
+            throw "Build output directory not found"
+          }
+          
+          $exePath = "build\windows\SwissKit.exe"
+          if (-not (Test-Path $exePath)) {
+            Write-Output "Contents of build\windows:"
+            Get-ChildItem "build\windows" -Recurse | Write-Output
+            throw "SwissKit.exe not found in build output"
+          }
+          
+          Write-Output "Build verification successful"
 
       # 安装 Inno Setup
       - name: Install Inno Setup
@@ -214,6 +308,16 @@ jobs:
           New-Item -ItemType Directory -Path "release\$artifactName" -Force
           Copy-Item -Path "build\windows\*" -Destination "release\$artifactName" -Recurse
           Compress-Archive -Path "release\$artifactName" -DestinationPath "build\$artifactName.zip"
+
+      # 上传构建日志以便调试
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build.log
+            *.log
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
