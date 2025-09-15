@@ -1,4 +1,4 @@
-name: Flet Windows Build - Working Fix
+name: Flet Windows Build with Installer
 
 on:
   push:
@@ -29,65 +29,11 @@ jobs:
         with:
           enable-cache: true
 
-      # 方案1: 临时降级 Flet 版本
-      - name: Create temporary compatible pyproject.toml
-        shell: powershell
-        run: |
-          Write-Output "=== Creating compatible configuration ==="
-          
-          # 备份原始文件
-          Copy-Item "pyproject.toml" "pyproject.toml.backup"
-          
-          # 读取并修改 pyproject.toml
-          $content = Get-Content "pyproject.toml" -Raw -Encoding UTF8
-          
-          # 替换 Flet 版本为兼容版本
-          $content = $content -replace 'flet==0\.28\.2', 'flet==0.27.0'
-          $content = $content -replace 'flet\[all\]==0\.28\.2', 'flet[all]==0.27.0'
-          
-          # 写回文件
-          $content | Set-Content "pyproject.toml" -Encoding UTF8 -NoNewline
-          
-          Write-Output "Modified pyproject.toml to use Flet 0.27.0"
-          Write-Output "Original file backed up as pyproject.toml.backup"
-
-      - name: Clean environment
-        shell: powershell
-        run: |
-          Write-Output "=== Cleaning environment ==="
-          
-          # 清理可能的缓存
-          $foldersToClean = @(
-            "$env:LOCALAPPDATA\Pub\Cache",
-            "$env:USERPROFILE\.flutter",
-            "$env:TEMP\flet*",
-            "build",
-            ".venv"
-          )
-          
-          foreach ($folder in $foldersToClean) {
-            if (Test-Path $folder) {
-              Write-Output "Removing: $folder"
-              Remove-Item -Recurse -Force $folder -ErrorAction SilentlyContinue
-            }
-          }
-
       - name: Install dependencies
-        shell: powershell
         run: |
-          Write-Output "=== Installing dependencies ==="
-          
-          # 设置环境变量
-          $env:PYTHONIOENCODING = "utf-8"
-          $env:PYTHONUTF8 = "1"
-          
-          # 安装依赖
-          uv sync --all-extras
-          
-        
+          uv sync
 
-      - name: Build application
-        shell: powershell
+      - name: Build with flet
         run: |
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $VERSION = "${{ github.event.inputs.test_version }}"
@@ -95,80 +41,20 @@ jobs:
             $VERSION = "${{ github.ref_name }}"
           }
           
-          Write-Output "=== Building application ==="
-          Write-Output "Version: $VERSION"
-          
-          # 设置环境变量
           $env:PYTHONIOENCODING = "utf-8"
           $env:PYTHONUTF8 = "1"
-          $env:FLUTTER_VERBOSE = "true"
           
-          try {
-            # 使用兼容版本构建
-            uv run flet build windows `
-              --build-version $VERSION `
-              --build-number 1 `
-              --verbose `
-              --no-rich-output `
-              2>&1 | Tee-Object -FilePath "build.log"
-            
-            Write-Output "Build completed successfully"
-          }
-          catch {
-            Write-Output "=== Build failed, showing logs ==="
-            if (Test-Path "build.log") {
-              Get-Content "build.log" -Tail 50 | Write-Output
-            }
-            throw "Build failed: $_"
-          }
-
-      # 验证构建结果
-      - name: Verify build output
+          uv run flet build windows --build-version $VERSION
         shell: powershell
-        run: |
-          Write-Output "=== Verifying build output ==="
-          
-          if (-not (Test-Path "build\windows")) {
-            Write-Output "Build directory contents:"
-            Get-ChildItem "build" -Recurse -ErrorAction SilentlyContinue | Write-Output
-            throw "Windows build directory not found"
-          }
-          
-          $exePath = "build\windows\SwissKit.exe"
-          if (-not (Test-Path $exePath)) {
-            Write-Output "Contents of build\windows:"
-            Get-ChildItem "build\windows" -Recurse | Write-Output
-            throw "SwissKit.exe not found"
-          }
-          
-          # 检查文件大小
-          $fileInfo = Get-ItemProperty $exePath
-          Write-Output "SwissKit.exe size: $($fileInfo.Length) bytes"
-          
-          if ($fileInfo.Length -lt 10MB) {
-            Write-Output "Warning: Executable seems too small, but continuing..."
-          }
-          
-          Write-Output "Build verification successful"
 
-      # 恢复原始配置
-      - name: Restore original pyproject.toml
-        if: always()
-        shell: powershell
-        run: |
-          if (Test-Path "pyproject.toml.backup") {
-            Move-Item "pyproject.toml.backup" "pyproject.toml" -Force
-            Write-Output "Restored original pyproject.toml"
-          }
-
-      # 安装 Inno Setup
+      # 新增：安装 Inno Setup
       - name: Install Inno Setup
         run: |
           choco install innosetup -y
         shell: powershell
 
-      # 创建安装包
-      - name: Create installer
+      # 新增：创建 Inno Setup 脚本
+      - name: Create Inno Setup script
         shell: powershell
         run: |
           $version = if ("${{ github.event_name }}" -eq "workflow_dispatch") {
@@ -179,14 +65,14 @@ jobs:
           
           $versionClean = $version -replace '^v', ''
           
-          Write-Output "Creating installer for version: $versionClean"
-          
           $innoScript = @"
           [Setup]
           AppName=SwissKit
           AppVersion=$versionClean
           AppPublisher=Summer Group
           AppPublisherURL=https://github.com/${{ github.repository }}
+          AppSupportURL=https://github.com/${{ github.repository }}/issues
+          AppUpdatesURL=https://github.com/${{ github.repository }}/releases
           DefaultDirName={autopf}\SwissKit
           DefaultGroupName=SwissKit
           UninstallDisplayName=SwissKit
@@ -195,44 +81,109 @@ jobs:
           OutputDir=installer
           OutputBaseFilename=SwissKit-Setup-$versionClean
           WizardStyle=modern
+          ; 权限设置：允许用户选择安装路径
           PrivilegesRequired=admin
+          PrivilegesRequiredOverridesAllowed=commandline dialog
           ArchitecturesAllowed=x64compatible
           ArchitecturesInstallIn64BitMode=x64compatible
+          ; 允许用户选择安装目录
+          DisableDirPage=no
+          DisableProgramGroupPage=no
+          ; 设置最小空间需求（100MB，根据实际需要调整）
+          ExtraDiskSpaceRequired=104857600
+          ; 允许用户取消安装
+          AllowCancelDuringInstall=yes
+          ; 升级支持：使用唯一的 AppId 来识别已安装的版本
+          AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+          ; 版本信息文件
+          VersionInfoVersion=$versionClean
+          VersionInfoDescription=SwissKit Application
+          ; 设置卸载键
+          UninstallDisplayIcon={app}\SwissKit.exe
+          ; 升级时的行为
+          SetupMutex=SwissKitSetupMutex
+          AppMutex=SwissKitAppMutex
           
           [Languages]
           Name: "english"; MessagesFile: "compiler:Default.isl"
           
           [Tasks]
-          Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+          Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+          Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; OnlyBelowVersion: 6.1; Check: not IsAdminInstallMode
           
           [Files]
           Source: "build\windows\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
           
           [Icons]
           Name: "{group}\SwissKit"; Filename: "{app}\SwissKit.exe"
-          Name: "{group}\Uninstall SwissKit"; Filename: "{uninstallexe}"
+          Name: "{group}\{cm:UninstallProgram,SwissKit}"; Filename: "{uninstallexe}"
           Name: "{autodesktop}\SwissKit"; Filename: "{app}\SwissKit.exe"; Tasks: desktopicon
+          Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\SwissKit"; Filename: "{app}\SwissKit.exe"; Tasks: quicklaunchicon
           
           [Run]
-          Filename: "{app}\SwissKit.exe"; Description: "Launch SwissKit"; Flags: nowait postinstall skipifsilent
+          Filename: "{app}\SwissKit.exe"; Description: "{cm:LaunchProgram,SwissKit}"; Flags: nowait postinstall skipifsilent
+          
+          [UninstallDelete]
+          Type: filesandordirs; Name: "{app}"
+          
+          [Code]
+          function IsUpgrade(): Boolean;
+          var
+            PrevVersion: String;
+          begin
+            PrevVersion := GetPreviousData('Version', '');
+            Result := (PrevVersion <> '');
+          end;
+          
+          function ShouldSkipPage(PageID: Integer): Boolean;
+          begin
+            Result := False;
+            // 升级时跳过某些页面
+            if IsUpgrade() then
+            begin
+              case PageID of
+                wpSelectDir: Result := True;  // 升级时跳过目录选择
+                wpSelectProgramGroup: Result := True;  // 升级时跳过程序组选择
+              end;
+            end;
+          end;
+          
+          function InitializeSetup(): Boolean;
+          var
+            PrevVersion: String;
+            CurVersion: String;
+          begin
+            Result := True;
+            PrevVersion := GetPreviousData('Version', '');
+            CurVersion := '$versionClean';
+          
+            if PrevVersion <> '' then
+            begin
+              if MsgBox('SwissKit version ' + PrevVersion + ' is already installed. ' +
+                        'Do you want to upgrade to version ' + CurVersion + '?', 
+                        mbConfirmation, MB_YESNO) = IDNO then
+              begin
+                Result := False;
+              end;
+            end;
+          end;
+          
+          procedure RegisterPreviousData(PreviousDataKey: Integer);
+          begin
+            SetPreviousData(PreviousDataKey, 'Version', '$versionClean');
+          end;
           "@
           
           New-Item -ItemType Directory -Path "installer" -Force
           $innoScript | Out-File -FilePath "swisskit.iss" -Encoding UTF8
-          
-          # 构建安装包
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "swisskit.iss"
-          
-          # 验证安装包
-          $installerPath = "installer\SwissKit-Setup-$versionClean.exe"
-          if (Test-Path $installerPath) {
-            $installerSize = (Get-ItemProperty $installerPath).Length
-            Write-Output "Installer created: $installerPath ($installerSize bytes)"
-          } else {
-            throw "Installer creation failed"
-          }
 
-      # 打包构建产物
+      # 新增：构建安装包
+      - name: Build installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "swisskit.iss"
+        shell: powershell
+
+      # 修改：同时打包ZIP和安装包
       - name: Package builds
         shell: powershell
         run: |
@@ -244,49 +195,12 @@ jobs:
           
           $artifactName = "swisskit-windows-x64-$version"
           
-          Write-Output "Creating portable package: $artifactName"
-          
-          # 创建便携版ZIP包
+          # 创建ZIP包
           New-Item -ItemType Directory -Path "release\$artifactName" -Force
           Copy-Item -Path "build\windows\*" -Destination "release\$artifactName" -Recurse
-          
-          # 添加说明文件
-          $readmeContent = @"
-          SwissKit Portable Version
-          =========================
-          
-          This is the portable version of SwissKit.
-          
-          To run the application:
-          1. Extract this ZIP file to any folder
-          2. Run SwissKit.exe
-          
-          No installation required.
-          
-          Version: $version
-          Build Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-          "@
-          
-          $readmeContent | Out-File -FilePath "release\$artifactName\README.txt" -Encoding UTF8
-          
-          # 创建ZIP包
-          Compress-Archive -Path "release\$artifactName" -DestinationPath "build\$artifactName.zip" -Force
-          
-          Write-Output "Portable package created successfully"
+          Compress-Archive -Path "release\$artifactName" -DestinationPath "build\$artifactName.zip"
 
-      # 上传构建日志（用于调试）
-      - name: Upload build logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: |
-            build.log
-            *.log
-          retention-days: 7
-
-      # 上传构建产物
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
@@ -294,25 +208,17 @@ jobs:
             build/*.zip
             installer/*.exe
 
-  # 发布步骤
   release:
     needs: build-windows
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    
     steps:
-      - name: Download artifacts
+      - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: windows-build
           path: artifacts/
-
-      - name: List artifacts
-        run: |
-          echo "Downloaded artifacts:"
-          find artifacts/ -type f -exec ls -lh {} \;
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
@@ -322,27 +228,43 @@ jobs:
           files: |
             artifacts/**/*
           body: |
-            ## SwissKit Windows Release
+            ## Windows Version Downloads
             
-            ### Downloads
+            ### 🚀 Recommended (Installer)
+            - **SwissKit-Setup-[version].exe** - Windows Installer
+              - Automatically installs to system
+              - Creates desktop and start menu shortcuts
+              - Supports one-click uninstall
+              - Best for regular use
             
-            **🚀 Recommended - Installer:**
-            - `SwissKit-Setup-*.exe` - Windows installer with automatic setup
+            ### 📦 Portable Version (ZIP)
+            - **swisskit-windows-x64-[version].zip** - Portable version
+              - Extract and run
+              - No system modifications
+              - Best for testing or temporary use
             
-            **📦 Portable Version:**
-            - `swisskit-windows-x64-*.zip` - Extract and run, no installation needed
+            ### Installation Instructions
             
-            ### System Requirements
-            - Windows 10/11 (64-bit)
-            - No additional dependencies required
+            **Installer Version:**
+            1. Download the `.exe` installer file
+            2. Double-click to run the installer
+            3. Follow the setup wizard:
+               - For new installation: Choose installation directory
+               - For upgrade: Previous settings will be preserved
+            4. Select additional options (desktop shortcut, etc.)
+            5. Launch from desktop or start menu
             
-            ### Installation
+            **Upgrade Instructions:**
+            - Simply run the new installer
+            - It will detect existing installation
+            - Your settings and data will be preserved
+            - The old version will be automatically replaced
             
-            **Installer:** Run the `.exe` file and follow the setup wizard.
+            **Portable Version:**
+            1. Download and extract the ZIP file
+            2. Run `SwissKit.exe` from the extracted folder
+            3. If you see a security warning, click "More info" → "Run anyway"
             
-            **Portable:** Extract the `.zip` file and run `SwissKit.exe`.
-            
-            ---
-            *Built with Flet 0.27.0 for compatibility*
+            > **System Requirements:** Windows 10/11 (x64)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
