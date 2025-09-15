@@ -1,4 +1,4 @@
-name: Flet Windows Build - Final Fix
+name: Flet Windows Build - Working Fix
 
 on:
   push:
@@ -29,14 +29,65 @@ jobs:
         with:
           enable-cache: true
 
+      # 方案1: 临时降级 Flet 版本
+      - name: Create temporary compatible pyproject.toml
+        shell: powershell
+        run: |
+          Write-Output "=== Creating compatible configuration ==="
+          
+          # 备份原始文件
+          Copy-Item "pyproject.toml" "pyproject.toml.backup"
+          
+          # 读取并修改 pyproject.toml
+          $content = Get-Content "pyproject.toml" -Raw -Encoding UTF8
+          
+          # 替换 Flet 版本为兼容版本
+          $content = $content -replace 'flet==0\.28\.2', 'flet==0.27.0'
+          $content = $content -replace 'flet\[all\]==0\.28\.2', 'flet[all]==0.27.0'
+          
+          # 写回文件
+          $content | Set-Content "pyproject.toml" -Encoding UTF8 -NoNewline
+          
+          Write-Output "Modified pyproject.toml to use Flet 0.27.0"
+          Write-Output "Original file backed up as pyproject.toml.backup"
+
+      - name: Clean environment
+        shell: powershell
+        run: |
+          Write-Output "=== Cleaning environment ==="
+          
+          # 清理可能的缓存
+          $foldersToClean = @(
+            "$env:LOCALAPPDATA\Pub\Cache",
+            "$env:USERPROFILE\.flutter",
+            "$env:TEMP\flet*",
+            "build",
+            ".venv"
+          )
+          
+          foreach ($folder in $foldersToClean) {
+            if (Test-Path $folder) {
+              Write-Output "Removing: $folder"
+              Remove-Item -Recurse -Force $folder -ErrorAction SilentlyContinue
+            }
+          }
+
       - name: Install dependencies
         shell: powershell
         run: |
           Write-Output "=== Installing dependencies ==="
+          
+          # 设置环境变量
+          $env:PYTHONIOENCODING = "utf-8"
+          $env:PYTHONUTF8 = "1"
+          
+          # 安装依赖
           uv sync --all-extras
+          
+          # 验证安装
+          uv run python -c "import flet; print(f'Flet version: {flet.__version__}')"
 
-      # 关键步骤：在 Flet 构建开始后立即修复依赖
-      - name: Build with dependency fix
+      - name: Build application
         shell: powershell
         run: |
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
@@ -45,95 +96,31 @@ jobs:
             $VERSION = "${{ github.ref_name }}"
           }
           
-          Write-Output "=== Starting Flet Build with Dependency Fix ==="
-          Write-Output "Build version: $VERSION"
+          Write-Output "=== Building application ==="
+          Write-Output "Version: $VERSION"
           
           # 设置环境变量
           $env:PYTHONIOENCODING = "utf-8"
           $env:PYTHONUTF8 = "1"
-          
-          # 启动 Flet 构建但在后台监控和修复
-          $buildJob = Start-Job -ScriptBlock {
-            param($version)
-            
-            # 在后台启动 Flet 构建
-            & uv run flet build windows --build-version $version --verbose --no-rich-output
-          } -ArgumentList $VERSION
-          
-          # 等待 Flutter 下载和初始化完成
-          Start-Sleep -Seconds 90
-          
-          # 修复依赖问题
-          Write-Output "=== Fixing dependency versions ==="
+          $env:FLUTTER_VERBOSE = "true"
           
           try {
-            # 查找 pub cache 位置
-            $pubCachePath = "$env:LOCALAPPDATA\Pub\Cache\hosted\pub.dev"
+            # 使用兼容版本构建
+            uv run flet build windows `
+              --build-version $VERSION `
+              --build-number 1 `
+              --verbose `
+              --no-rich-output `
+              2>&1 | Tee-Object -FilePath "build.log"
             
-            if (Test-Path $pubCachePath) {
-              Write-Output "Found pub cache at: $pubCachePath"
-              
-              # 查找并修复 webview_flutter_android 包
-              $webviewDirs = Get-ChildItem "$pubCachePath" -Filter "webview_flutter_android-*" -Directory -ErrorAction SilentlyContinue
-              
-              foreach ($dir in $webviewDirs) {
-                $pubspecPath = Join-Path $dir.FullName "pubspec.yaml"
-                
-                if (Test-Path $pubspecPath) {
-                  Write-Output "Fixing $pubspecPath"
-                  
-                  # 读取并修改 pubspec.yaml
-                  $content = Get-Content $pubspecPath -Raw -Encoding UTF8
-                  
-                  # 替换 Dart SDK 版本要求
-                  $content = $content -replace 'sdk:\s*[''"]>=3\.9\.0[''"]', 'sdk: ">=3.7.0 <4.0.0"'
-                  $content = $content -replace 'sdk:\s*[''"]>=3\.8\.0[''"]', 'sdk: ">=3.7.0 <4.0.0"'
-                  $content = $content -replace 'sdk:\s*[''"].*>=3\.[89]\..*[''"]', 'sdk: ">=3.7.0 <4.0.0"'
-                  
-                  # 写回文件
-                  $content | Set-Content $pubspecPath -Encoding UTF8 -NoNewline
-                  
-                  Write-Output "Successfully modified $($dir.Name)"
-                }
-              }
-              
-              # 同时修复其他可能有版本问题的包
-              $packagesToFix = @("webview_flutter_wkwebview", "webview_flutter_platform_interface")
-              
-              foreach ($packageName in $packagesToFix) {
-                $packageDirs = Get-ChildItem "$pubCachePath" -Filter "$packageName-*" -Directory -ErrorAction SilentlyContinue
-                
-                foreach ($dir in $packageDirs) {
-                  $pubspecPath = Join-Path $dir.FullName "pubspec.yaml"
-                  
-                  if (Test-Path $pubspecPath) {
-                    $content = Get-Content $pubspecPath -Raw -Encoding UTF8
-                    $content = $content -replace 'sdk:\s*[''"]>=3\.[89]\..*[''"]', 'sdk: ">=3.7.0 <4.0.0"'
-                    $content | Set-Content $pubspecPath -Encoding UTF8 -NoNewline
-                    Write-Output "Fixed $($dir.Name)"
-                  }
-                }
-              }
-            }
+            Write-Output "Build completed successfully"
           }
           catch {
-            Write-Output "Dependency fix failed, but continuing: $_"
-          }
-          
-          # 等待构建完成
-          Write-Output "=== Waiting for build to complete ==="
-          Wait-Job $buildJob -Timeout 1800  # 30 minutes timeout
-          
-          $result = Receive-Job $buildJob
-          $exitCode = $buildJob.State
-          
-          Remove-Job $buildJob
-          
-          # 输出构建结果
-          Write-Output $result
-          
-          if ($exitCode -ne "Completed") {
-            throw "Build failed with state: $exitCode"
+            Write-Output "=== Build failed, showing logs ==="
+            if (Test-Path "build.log") {
+              Get-Content "build.log" -Tail 50 | Write-Output
+            }
+            throw "Build failed: $_"
           }
 
       # 验证构建结果
@@ -141,18 +128,39 @@ jobs:
         shell: powershell
         run: |
           Write-Output "=== Verifying build output ==="
+          
           if (-not (Test-Path "build\windows")) {
-            throw "Build output directory not found"
+            Write-Output "Build directory contents:"
+            Get-ChildItem "build" -Recurse -ErrorAction SilentlyContinue | Write-Output
+            throw "Windows build directory not found"
           }
           
           $exePath = "build\windows\SwissKit.exe"
           if (-not (Test-Path $exePath)) {
             Write-Output "Contents of build\windows:"
             Get-ChildItem "build\windows" -Recurse | Write-Output
-            throw "SwissKit.exe not found in build output"
+            throw "SwissKit.exe not found"
+          }
+          
+          # 检查文件大小
+          $fileInfo = Get-ItemProperty $exePath
+          Write-Output "SwissKit.exe size: $($fileInfo.Length) bytes"
+          
+          if ($fileInfo.Length -lt 10MB) {
+            Write-Output "Warning: Executable seems too small, but continuing..."
           }
           
           Write-Output "Build verification successful"
+
+      # 恢复原始配置
+      - name: Restore original pyproject.toml
+        if: always()
+        shell: powershell
+        run: |
+          if (Test-Path "pyproject.toml.backup") {
+            Move-Item "pyproject.toml.backup" "pyproject.toml" -Force
+            Write-Output "Restored original pyproject.toml"
+          }
 
       # 安装 Inno Setup
       - name: Install Inno Setup
@@ -172,26 +180,39 @@ jobs:
           
           $versionClean = $version -replace '^v', ''
           
+          Write-Output "Creating installer for version: $versionClean"
+          
           $innoScript = @"
           [Setup]
           AppName=SwissKit
           AppVersion=$versionClean
           AppPublisher=Summer Group
+          AppPublisherURL=https://github.com/${{ github.repository }}
           DefaultDirName={autopf}\SwissKit
           DefaultGroupName=SwissKit
+          UninstallDisplayName=SwissKit
           Compression=lzma2
           SolidCompression=yes
           OutputDir=installer
           OutputBaseFilename=SwissKit-Setup-$versionClean
           WizardStyle=modern
           PrivilegesRequired=admin
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          
+          [Languages]
+          Name: "english"; MessagesFile: "compiler:Default.isl"
+          
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
           
           [Files]
           Source: "build\windows\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
           
           [Icons]
           Name: "{group}\SwissKit"; Filename: "{app}\SwissKit.exe"
-          Name: "{autodesktop}\SwissKit"; Filename: "{app}\SwissKit.exe"
+          Name: "{group}\Uninstall SwissKit"; Filename: "{uninstallexe}"
+          Name: "{autodesktop}\SwissKit"; Filename: "{app}\SwissKit.exe"; Tasks: desktopicon
           
           [Run]
           Filename: "{app}\SwissKit.exe"; Description: "Launch SwissKit"; Flags: nowait postinstall skipifsilent
@@ -202,8 +223,17 @@ jobs:
           
           # 构建安装包
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "swisskit.iss"
+          
+          # 验证安装包
+          $installerPath = "installer\SwissKit-Setup-$versionClean.exe"
+          if (Test-Path $installerPath) {
+            $installerSize = (Get-ItemProperty $installerPath).Length
+            Write-Output "Installer created: $installerPath ($installerSize bytes)"
+          } else {
+            throw "Installer creation failed"
+          }
 
-      # 打包
+      # 打包构建产物
       - name: Package builds
         shell: powershell
         run: |
@@ -214,11 +244,50 @@ jobs:
           }
           
           $artifactName = "swisskit-windows-x64-$version"
+          
+          Write-Output "Creating portable package: $artifactName"
+          
+          # 创建便携版ZIP包
           New-Item -ItemType Directory -Path "release\$artifactName" -Force
           Copy-Item -Path "build\windows\*" -Destination "release\$artifactName" -Recurse
-          Compress-Archive -Path "release\$artifactName" -DestinationPath "build\$artifactName.zip"
+          
+          # 添加说明文件
+          $readmeContent = @"
+          SwissKit Portable Version
+          =========================
+          
+          This is the portable version of SwissKit.
+          
+          To run the application:
+          1. Extract this ZIP file to any folder
+          2. Run SwissKit.exe
+          
+          No installation required.
+          
+          Version: $version
+          Build Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+          "@
+          
+          $readmeContent | Out-File -FilePath "release\$artifactName\README.txt" -Encoding UTF8
+          
+          # 创建ZIP包
+          Compress-Archive -Path "release\$artifactName" -DestinationPath "build\$artifactName.zip" -Force
+          
+          Write-Output "Portable package created successfully"
 
-      - name: Upload artifact
+      # 上传构建日志（用于调试）
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build.log
+            *.log
+          retention-days: 7
+
+      # 上传构建产物
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
@@ -226,17 +295,25 @@ jobs:
             build/*.zip
             installer/*.exe
 
+  # 发布步骤
   release:
     needs: build-windows
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    
     steps:
-      - name: Download artifact
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           name: windows-build
           path: artifacts/
+
+      - name: List artifacts
+        run: |
+          echo "Downloaded artifacts:"
+          find artifacts/ -type f -exec ls -lh {} \;
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
@@ -245,5 +322,28 @@ jobs:
           name: SwissKit Release ${{ github.event.inputs.test_version || github.ref_name }}
           files: |
             artifacts/**/*
+          body: |
+            ## SwissKit Windows Release
+            
+            ### Downloads
+            
+            **🚀 Recommended - Installer:**
+            - `SwissKit-Setup-*.exe` - Windows installer with automatic setup
+            
+            **📦 Portable Version:**
+            - `swisskit-windows-x64-*.zip` - Extract and run, no installation needed
+            
+            ### System Requirements
+            - Windows 10/11 (64-bit)
+            - No additional dependencies required
+            
+            ### Installation
+            
+            **Installer:** Run the `.exe` file and follow the setup wizard.
+            
+            **Portable:** Extract the `.zip` file and run `SwissKit.exe`.
+            
+            ---
+            *Built with Flet 0.27.0 for compatibility*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
